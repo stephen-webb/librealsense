@@ -28,11 +28,8 @@ require_package libssl-dev
 #Parse user inputs
 #Reload stock drivers (Developers' option)
 [ "$#" -ne 0 -a "$1" == "reset" ] && reset_driver=1 || reset_driver=0
-#Full kernel rebuild with xhci patch is required (4.4 only)
-[ "$#" -ne 0 -a "$1" == "xhci-patch" ] && xhci_patch=1 || xhci_patch=0
 #Rebuild USB subsystem w/o kernel rebuild
 [ "$#" -ne 0 -a "$1" == "build_usbcore_modules" ] && build_usbcore_modules=1 || build_usbcore_modules=0
-[ ${build_usbcore_modules} -eq 1 ] && xhci_patch=1
 
 retpoline_retrofit=0
 
@@ -40,77 +37,29 @@ LINUX_BRANCH=$(uname -r)
 #Get kernel major.minor
 IFS='.' read -a kernel_version <<< ${LINUX_BRANCH}
 k_maj_min=$((${kernel_version[0]}*100 + ${kernel_version[1]}))
-if [[ ( ${xhci_patch} -eq 1 ) && ( ${k_maj_min} -ne 404 ) ]]; then
-	echo -e "\e[43mThe xhci_patch flag is compatible with LTS branch 4.4 only, currently selected kernel is $(uname -r)\e[0m"
-	exit 1
-fi
 
 # Construct branch name from distribution codename {xenial,bionic,..} and kernel version
 ubuntu_codename=`. /etc/os-release; echo ${UBUNTU_CODENAME/*, /}`
-if [ -z "${ubuntu_codename}" ];
-then
-	# Trusty Tahr shall use xenial code base
-	ubuntu_codename="xenial"
-	retpoline_retrofit=1
-fi
 
-kernel_branch=$(choose_kernel_branch ${LINUX_BRANCH} ${ubuntu_codename})
+kernel_branch=raspi-5.4
 kernel_name="ubuntu-${ubuntu_codename}-$kernel_branch"
 echo -e "\e[32mCreate patches workspace in \e[93m${kernel_name} \e[32mfolder\n\e[0m"
 
 #Distribution-specific packages
-if [ ${ubuntu_codename} == "bionic" ];
-then
-	require_package libelf-dev
-	require_package elfutils
-	#Ubuntu 18.04 kernel 4.18
-	require_package bison
-	require_package flex
-fi
+require_package libelf-dev
+require_package elfutils
+#Ubuntu 18.04 kernel 4.18
+require_package bison
+require_package flex
 
 
 # Get the linux kernel and change into source tree
 if [ ! -d ${kernel_name} ]; then
 	mkdir ${kernel_name}
-	cd ${kernel_name}
-	git init
-	git remote add origin git://kernel.ubuntu.com/ubuntu/ubuntu-${ubuntu_codename}.git
-	cd ..
 fi
 
 cd ${kernel_name}
-#if [ $xhci_patch -eq 0 ];
-#then
-#Search the repository for the tag that matches the mmaj.min.patch-build of Ubuntu kernel
-kernel_full_num=$(echo $LINUX_BRANCH | cut -d '-' -f 1,2)
-kernel_git_tag=$(git ls-remote --tags origin | grep "${kernel_full_num}\." | grep '[^^{}]$' | tail -n 1 | awk -F/ '{print $NF}')
-echo -e "\e[32mFetching Ubuntu LTS tag \e[47m${kernel_git_tag}\e[0m \e[32m to the local kernel sources folder\e[0m"
-git fetch origin tag ${kernel_git_tag} --no-tags
-
-# Verify that there are no trailing changes., warn the user to make corrective action if needed
-if [ $(git status | grep 'modified:' | wc -l) -ne 0 ];
-then
-	echo -e "\e[36mThe kernel has modified files:\e[0m"
-	git status | grep 'modified:'
-	echo -e "\e[36mProceeding will reset all local kernel changes. Press 'n' within 3 seconds to abort the operation"
-	set +e
-	read -n 1 -t 3 -r -p "Do you want to proceed? [Y/n]" response
-	set -e
-	response=${response,,}    # tolower
-	if [[ $response =~ ^(n|N)$ ]]; 
-	then
-		echo -e "\e[41mScript has been aborted on user requiest. Please resolve the modified files are rerun\e[0m"
-		exit 1
-	else
-		echo -e "\e[0m"
-		printf "Resetting local changes in %s folder\n " ${kernel_name}
-		git reset --hard
-	fi
-fi
-
-echo -e "\e[32mSwitching to LTS tag ${kernel_git_tag}\e[0m"
-git checkout ${kernel_git_tag}
-
+sudo apt-get source linux-image-$(uname -r)
 
 if [ $reset_driver -eq 1 ];
 then 
@@ -124,46 +73,13 @@ else
 	patch -p1 < ../scripts/realsense-metadata-${ubuntu_codename}-${kernel_branch}.patch
 	echo -e "\e[32mApplying realsense-hid patch\e[0m"
 	patch -p1 < ../scripts/realsense-hid-${ubuntu_codename}-${kernel_branch}.patch
-	echo -e "\e[32mApplying realsense-powerlinefrequency-fix patch\e[0m"
-	patch -p1 < ../scripts/realsense-powerlinefrequency-control-fix.patch
-	# Applying 3rd-party patch that affects USB2 behavior
-	# See reference https://patchwork.kernel.org/patch/9907707/
-	if [ ${k_maj_min} -lt 418 ];
-	then
-		echo -e "\e[32mRetrofit UVC bug fix rectified in 4.18+\e[0m"
-		if patch -N --dry-run -p1 < ../scripts/v1-media-uvcvideo-mark-buffer-error-where-overflow.patch; then
-			patch -N -p1 < ../scripts/v1-media-uvcvideo-mark-buffer-error-where-overflow.patch
-		else
-			echo -e "\e[36m  Skip the patch - it is already found in the source tree\e[0m"
-		fi
-	fi
-	if [ $xhci_patch -eq 1 ]; then
-		echo -e "\e[32mApplying streamoff hotfix patch in videobuf2-core\e[0m"
-		patch -p1 < ../scripts/01-Backport-streamoff-vb2-core-hotfix.patch
-		echo -e "\e[32mApplying 01-xhci-Add-helper-to-get-hardware-dequeue-pointer-for patch\e[0m"
-		patch -p1 < ../scripts/01-xhci-Add-helper-to-get-hardware-dequeue-pointer-for.patch
-		echo -e "\e[32mApplying 02-xhci-Add-stream-id-to-to-xhci_dequeue_state-structur patch\e[0m"
-		patch -p1 < ../scripts/02-xhci-Add-stream-id-to-to-xhci_dequeue_state-structur.patch
-		echo -e "\e[32mApplying 03-xhci-Find-out-where-an-endpoint-or-stream-stopped-fr patch\e[0m"
-		patch -p1 < ../scripts/03-xhci-Find-out-where-an-endpoint-or-stream-stopped-fr.patch
-		echo -e "\e[32mApplying 04-xhci-remove-unused-stopped_td-pointer patch\e[0m"
-		patch -p1 < ../scripts/04-xhci-remove-unused-stopped_td-pointer.patch
-	fi
+	echo -e "\e[32mApplying realsense-powerlinefrequency-fix-${ubuntu_codename}-${kernel_branch} patch\e[0m"
+	patch -p1 < ../scripts/realsense-powerlinefrequency-control-fix-${ubuntu_codename}-${kernel_branch}.patch
 fi
 
 #Copy configuration
 sudo cp /usr/src/linux-headers-$(uname -r)/.config .
 sudo cp /usr/src/linux-headers-$(uname -r)/Module.symvers .
-
-# Basic build for kernel modules
-echo -e "\e[32mPrepare kernel modules configuration\e[0m"
-#Retpoline script manual retrieval. based on https://github.com/IntelRealSense/librealsense/issues/1493
-#Required since the retpoline patches were introduced into Ubuntu kernels
-if [ ! -f scripts/ubuntu-retpoline-extract-one ]; then
-	pwd
-	for f in $(find . -name 'retpoline-extract-one'); do cp ${f} scripts/ubuntu-retpoline-extract-one; done;
-	echo $$$
-fi
 
 #Reuse current kernel configuration. Assign default values to newly-introduced options.
 sudo make olddefconfig modules_prepare
@@ -173,19 +89,6 @@ sudo make olddefconfig modules_prepare
 #Vermagic identity is required
 sudo sed -i "s/\".*\"/\"$LINUX_BRANCH\"/g" ./include/generated/utsrelease.h
 sudo sed -i "s/.*/$LINUX_BRANCH/g" ./include/config/kernel.release
-#Patch for Trusty Tahr (Ubuntu 14.05) with GCC not retrofitted with the retpoline patch.
-[ $retpoline_retrofit -eq 1 ] && sudo sed -i "s/#ifdef RETPOLINE/#if (1)/g" ./include/linux/vermagic.h
-
-
-if [[ ( $xhci_patch -eq 1 ) && ( $build_usbcore_modules -eq 0 ) ]]; then
-	sudo make -j$(($(nproc)-1))
-	sudo make modules -j$(($(nproc)-1))
-	sudo make modules_install -j$(($(nproc)-1))
-	sudo make install
-	echo -e "\e[92m\n\e[1m`sudo make kernelrelease` Kernel has been successfully installed."
-	echo -e "\e[92m\n\e[1mScript has completed. Please reboot and load the newly installed Kernel from GRUB list.\n\e[0m"
-exit 0
-fi
 
 # Build the uvc, accel and gyro modules
 KBASE=`pwd`
