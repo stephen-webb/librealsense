@@ -42,8 +42,8 @@ k_maj_min=$((${kernel_version[0]}*100 + ${kernel_version[1]}))
 ubuntu_codename=`. /etc/os-release; echo ${UBUNTU_CODENAME/*, /}`
 
 kernel_branch=raspi-5.4
-kernel_name="ubuntu-${ubuntu_codename}-$kernel_branch"
-echo -e "\e[32mCreate patches workspace in \e[93m${kernel_name} \e[32mfolder\n\e[0m"
+kernel_source="${ubuntu_codename}-$kernel_branch"
+echo -e "\e[32mCreate patches workspace in \e[93m${kernel_source} \e[32mfolder\n\e[0m"
 
 #Distribution-specific packages
 require_package libelf-dev
@@ -54,12 +54,13 @@ require_package flex
 
 
 # Get the linux kernel and change into source tree
-if [ ! -d ${kernel_name} ]; then
-	mkdir ${kernel_name}
+if [ ! -d ${kernel_source} ]; then
+	mkdir ${kernel_source}
 fi
 
-cd ${kernel_name}
+cd ${kernel_source}
 sudo apt-get source linux-image-$(uname -r)
+cd linux-raspi-5.4.0
 
 if [ $reset_driver -eq 1 ];
 then 
